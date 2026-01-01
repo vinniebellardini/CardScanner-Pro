@@ -1,0 +1,6 @@
+[theme]
+primaryColor = "#3B82F6" # Bright blue for primary buttons
+backgroundColor = "#0F172A" # Deep dark blue background like AI Studio
+secondaryBackgroundColor = "#1E293B" # Lighter blue-gray for sidebar and cards
+textColor = "#F8FAFC" # Almost white text
+font = "sans serif"
