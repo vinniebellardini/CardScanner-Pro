@@ -1,5 +1,6 @@
 import streamlit as st
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from PIL import Image
 import pandas as pd
 import json
@@ -37,6 +38,8 @@ st.markdown("""
     .slab-header { font-size: 1.1rem; font-weight: 900; color: #F8FAFC; }
     .slab-detail { color: #94A3B8; font-size: 0.9rem; }
     .slab-price { font-size: 1.4rem; font-weight: 900; color: #10B981; text-align: right; }
+    
+    .toast-box { padding: 10px; border-radius: 8px; background-color: #14532d; color: #bbf7d0; font-weight: bold; border: 1px solid #22c55e; margin-bottom: 10px; text-align: center;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -50,9 +53,9 @@ def connect_to_sheets():
         client = gspread.authorize(creds)
         # Open the Sheet named "Card Inventory"
         sheet = client.open("Card Inventory").sheet1
-        return sheet
+        return sheet, None
     except Exception as e:
-        return None
+        return None, str(e)
 
 # 3. Helper Functions
 def get_price_range(value_str):
@@ -65,7 +68,7 @@ def get_price_range(value_str):
     else: return min(clean_nums), max(clean_nums)
 
 def save_to_google_sheets(data_dict):
-    sheet = connect_to_sheets()
+    sheet, err = connect_to_sheets()
     if sheet:
         try:
             # Check if headers exist, if not add them
@@ -88,7 +91,6 @@ def save_to_google_sheets(data_dict):
             sheet.append_row(row)
             return True
         except Exception as e:
-            st.error(f"Cloud Save Error: {e}")
             return False
     return False
 
@@ -101,10 +103,11 @@ with st.sidebar:
     st.title("💎 Collection Stats")
     
     # Check Cloud Connection
-    if connect_to_sheets():
-        st.success("🟢 Connected to Google Sheets")
+    sheet_conn, conn_err = connect_to_sheets()
+    if sheet_conn:
+        st.success("🟢 Cloud Connected")
     else:
-        st.error("🔴 Cloud Disconnected (Check Secrets)")
+        st.error(f"🔴 Cloud Error: {conn_err}")
 
     total_low, total_high = 0.0, 0.0
     for item in st.session_state.inventory:
@@ -158,15 +161,24 @@ with col_action:
                 status = st.empty()
                 status.write("Analyzing...")
                 try:
-                    genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-                    model = genai.GenerativeModel('gemini-1.5-flash', generation_config={"response_mime_type": "application/json"})
+                    # NEW GEMINI API CLIENT SETUP
+                    client = genai.Client(api_key=st.secrets["GOOGLE_API_KEY"])
+                    
                     ctx = f"HINT: {series_hint}" if series_hint else ""
-                    prompt = f"""Identify item. JSON: 'Player','Team','Year','Set','Card_Number','Variation','Condition_Notes','Estimated_Raw_Value' ($ Range). {ctx}"""
-                    inputs = [prompt, Image.open(s_front)]
+                    prompt_text = f"""Identify item. JSON: 'Player','Team','Year','Set','Card_Number','Variation','Condition_Notes','Estimated_Raw_Value' ($ Range). {ctx}"""
+                    
+                    # Prepare images for new API
+                    inputs = [prompt_text, Image.open(s_front)]
                     if s_back: inputs.append(Image.open(s_back))
                     
-                    resp = model.generate_content(inputs)
-                    new = json.loads(resp.text)
+                    # Call new API
+                    response = client.models.generate_content(
+                        model="gemini-1.5-flash",
+                        contents=inputs,
+                        config=types.GenerateContentConfig(response_mime_type="application/json")
+                    )
+                    
+                    new = json.loads(response.text)
                     new['Archive_Location'] = archive_location
                     
                     # SAVE TO CLOUD & SESSION
@@ -201,17 +213,24 @@ with col_action:
                     stat = st.empty()
                     total = len(sorted_files)//2
                     
+                    # Initialize API Client once
+                    client = genai.Client(api_key=st.secrets["GOOGLE_API_KEY"])
+                    
                     for i in range(0, len(sorted_files), 2):
                         stat.markdown(f"**Card {(i//2)+1}/{total}**")
                         try:
-                            genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-                            model = genai.GenerativeModel('gemini-1.5-flash', generation_config={"response_mime_type": "application/json"})
                             ctx = f"HINT: {series_hint}" if series_hint else ""
-                            prompt = f"""Identify item using Front (Img1) & Back (Img2). JSON keys: 'Player','Team','Year','Set','Card_Number','Variation','Condition_Notes','Estimated_Raw_Value'. {ctx}"""
-                            inputs = [prompt, Image.open(sorted_files[i]), Image.open(sorted_files[i+1])]
+                            prompt_text = f"""Identify item using Front (Img1) & Back (Img2). JSON keys: 'Player','Team','Year','Set','Card_Number','Variation','Condition_Notes','Estimated_Raw_Value'. {ctx}"""
                             
-                            resp = model.generate_content(inputs)
-                            new = json.loads(resp.text)
+                            inputs = [prompt_text, Image.open(sorted_files[i]), Image.open(sorted_files[i+1])]
+                            
+                            response = client.models.generate_content(
+                                model="gemini-1.5-flash",
+                                contents=inputs,
+                                config=types.GenerateContentConfig(response_mime_type="application/json")
+                            )
+                            
+                            new = json.loads(response.text)
                             new['Archive_Location'] = archive_location
                             
                             # SAVE TO CLOUD & SESSION
