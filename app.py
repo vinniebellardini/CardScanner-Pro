@@ -64,15 +64,11 @@ def upload_image_to_drive(image_file, filename):
         service = build('drive', 'v3', credentials=creds)
         folder_id = st.secrets["GDRIVE_FOLDER_ID"]
         
-        # Convert to bytes
         img_byte_arr = io.BytesIO()
         image_file.save(img_byte_arr, format=image_file.format)
         img_byte_arr.seek(0)
         
-        file_metadata = {
-            'name': filename,
-            'parents': [folder_id]
-        }
+        file_metadata = {'name': filename, 'parents': [folder_id]}
         media = MediaIoBaseUpload(img_byte_arr, mimetype=f'image/{image_file.format.lower()}')
         
         file = service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
@@ -95,13 +91,9 @@ def save_to_google_sheets(data_dict):
     sheet, err = connect_to_sheets()
     if sheet:
         try:
-            # Check/Add Headers
             if not sheet.row_values(1):
                 headers = ['Player', 'Year', 'Set', 'Team', 'Card_Number', 'Variation', 'Condition_Notes', 'Estimated_Raw_Value', 'Archive_Location', 'Front_Image', 'Back_Image']
                 sheet.append_row(headers)
-            
-            # If headers exist but match old format, we might need to be careful, but gspread append usually handles it.
-            # Ideally, user should clear sheet or add columns manually if using old sheet.
             
             row = [
                 data_dict.get('Player', ''),
@@ -147,7 +139,6 @@ with st.sidebar:
 col_action, col_data = st.columns([1, 1.2], gap="large")
 
 with col_action:
-    # Logo
     if os.path.exists("logo.png"):
         import base64
         with open("logo.png", "rb") as f: data = base64.b64encode(f.read()).decode()
@@ -155,14 +146,10 @@ with col_action:
     else:
         st.markdown('<div class="main-title" style="text-align: center;">⛏️ THE DIG</div>', unsafe_allow_html=True)
 
-    with st.expander("⚙️ Session Settings", expanded=True):
-        archive_location = st.text_input("📦 Archive Box / Location", value="Box 1")
-        series_hint = st.text_input("🔍 Series Hint (Optional)", placeholder="e.g. '1986 Fleer'")
-
     st.markdown("### 📸 Scan Tools")
     tab_single, tab_batch = st.tabs(["💎 Single Item", "🚀 Batch Dig"])
 
-    # --- SINGLE ITEM ---
+    # --- SINGLE ---
     with tab_single:
         col_f, col_b = st.columns(2)
         with col_f: s_front = st.file_uploader("Front (Req)", type=['jpg','png','jpeg'], key="sf")
@@ -175,105 +162,99 @@ with col_action:
                 status.write("Analyzing...")
                 try:
                     client = genai.Client(api_key=st.secrets["GOOGLE_API_KEY"])
-                    ctx = f"HINT: {series_hint}" if series_hint else ""
-                    prompt_text = f"""Identify item. JSON: 'Player','Team','Year','Set','Card_Number','Variation','Condition_Notes','Estimated_Raw_Value' ($ Range). {ctx}"""
+                    prompt = f"""Identify item. JSON: 'Player','Team','Year','Set','Card_Number','Variation','Condition_Notes','Estimated_Raw_Value' ($ Range)."""
                     
-                    img_front = Image.open(s_front)
-                    img_back = Image.open(s_back) if s_back else None
+                    img_f = Image.open(s_front)
+                    inputs = [prompt, img_f]
+                    if s_back: inputs.append(Image.open(s_back))
                     
-                    inputs = [prompt_text, img_front]
-                    if img_back: inputs.append(img_back)
+                    resp = client.models.generate_content(model="gemini-1.5-flash", contents=inputs, config=types.GenerateContentConfig(response_mime_type="application/json"))
+                    new = json.loads(resp.text)
+                    new['Archive_Location'] = ""
                     
-                    response = client.models.generate_content(
-                        model="gemini-1.5-flash",
-                        contents=inputs,
-                        config=types.GenerateContentConfig(response_mime_type="application/json")
-                    )
-                    new = json.loads(response.text)
-                    new['Archive_Location'] = archive_location
-                    
-                    # UPLOAD IMAGES
-                    status.write("Uploading Photos to Drive...")
+                    status.write("Uploading...")
                     safe_name = f"{new.get('Player', 'Unknown')}_{new.get('Year', '')}_{new.get('Set', '')}".replace(" ", "_")
+                    new['Front_Image'] = upload_image_to_drive(img_f, f"{safe_name}_FRONT.jpg")
+                    if s_back: new['Back_Image'] = upload_image_to_drive(Image.open(s_back), f"{safe_name}_BACK.jpg")
                     
-                    front_url = upload_image_to_drive(img_front, f"{safe_name}_FRONT.jpg")
-                    new['Front_Image'] = front_url
-                    
-                    if img_back:
-                        back_url = upload_image_to_drive(img_back, f"{safe_name}_BACK.jpg")
-                        new['Back_Image'] = back_url
-                    
-                    # SAVE TO SHEET
-                    status.write("Saving to Sheet...")
-                    cloud_success = save_to_google_sheets(new)
+                    save_to_google_sheets(new)
                     st.session_state.inventory.append(new)
-                    
-                    st.markdown(f"""
-                    <div class="slab-container">
-                        <div class="slab-header">✅ {new.get('Player')}</div>
-                        <div class="slab-detail">{new.get('Year')} {new.get('Set')} #{new.get('Card_Number')}</div>
-                        <div class="slab-price">{new.get('Estimated_Raw_Value')}</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
-                    if cloud_success: st.toast("☁️ Saved Data & Photos!", icon="✅")
-                    else: st.toast("⚠️ Saved locally only", icon="⚠️")
+                    st.toast("✅ Saved!", icon="cloud")
                     status.empty()
-                    
                 except Exception as e: st.error(f"Error: {e}")
 
     # --- BATCH ---
     with tab_batch:
-        st.info("Order: Front, Back, Front, Back...")
+        # OPTIMIZATION TOGGLES
+        col_mode, col_help = st.columns([1, 0.2])
+        with col_mode:
+            include_backs = st.toggle("📸 Include Back Images?", value=True)
+        with col_help:
+            st.help("OFF: Upload Fronts only (Faster). ON: Upload Front + Back pairs (Better accuracy).")
+            
         b_files = st.file_uploader("Upload Batch", type=['jpg','png','jpeg'], accept_multiple_files=True, key="bf")
         
+        # LOGIC VALIDATOR
+        if b_files:
+            file_count = len(b_files)
+            if include_backs:
+                card_count = file_count // 2
+                if file_count % 2 != 0:
+                    st.error(f"⚠️ Odd file count ({file_count}). You are missing a back image!")
+                else:
+                    st.success(f"✅ Ready to process {card_count} pairs.")
+            else:
+                st.success(f"✅ Ready to process {file_count} single cards.")
+
         if st.button("🚀 Run Batch", type="primary", use_container_width=True):
             if not b_files: st.warning("No files")
+            elif include_backs and len(b_files) % 2 != 0: st.error("Fix file count first.")
             else:
                 sorted_files = sorted(b_files, key=lambda x: x.name)
-                if len(sorted_files) % 2 != 0: st.error("Uneven batch! Need pairs.")
-                else:
-                    prog = st.progress(0)
-                    stat = st.empty()
-                    total = len(sorted_files)//2
-                    client = genai.Client(api_key=st.secrets["GOOGLE_API_KEY"])
-                    
-                    for i in range(0, len(sorted_files), 2):
-                        stat.markdown(f"**Card {(i//2)+1}/{total}**")
-                        try:
-                            img_f = Image.open(sorted_files[i])
+                prog = st.progress(0)
+                client = genai.Client(api_key=st.secrets["GOOGLE_API_KEY"])
+                
+                # BATCH LOOP LOGIC
+                step = 2 if include_backs else 1
+                total_cards = len(sorted_files) // step
+                
+                for i in range(0, len(sorted_files), step):
+                    current_card = (i // step) + 1
+                    try:
+                        img_f = Image.open(sorted_files[i])
+                        inputs = [f"""Identify item. JSON keys: 'Player','Team','Year','Set','Card_Number','Variation','Condition_Notes','Estimated_Raw_Value'.""", img_f]
+                        
+                        img_b = None
+                        if include_backs:
                             img_b = Image.open(sorted_files[i+1])
-                            
-                            ctx = f"HINT: {series_hint}" if series_hint else ""
-                            prompt_text = f"""Identify item using Front (Img1) & Back (Img2). JSON keys: 'Player','Team','Year','Set','Card_Number','Variation','Condition_Notes','Estimated_Raw_Value'. {ctx}"""
-                            
-                            resp = client.models.generate_content(
-                                model="gemini-1.5-flash",
-                                contents=[prompt_text, img_f, img_b],
-                                config=types.GenerateContentConfig(response_mime_type="application/json")
-                            )
-                            new = json.loads(resp.text)
-                            new['Archive_Location'] = archive_location
-                            
-                            # Upload Images
-                            safe_name = f"{new.get('Player', 'Unknown')}_{new.get('Year', '')}_{new.get('Set', '')}".replace(" ", "_")
-                            new['Front_Image'] = upload_image_to_drive(img_f, f"{safe_name}_FRONT.jpg")
+                            inputs.append(img_b)
+                        
+                        # AI Call
+                        resp = client.models.generate_content(model="gemini-1.5-flash", contents=inputs, config=types.GenerateContentConfig(response_mime_type="application/json"))
+                        new = json.loads(resp.text)
+                        
+                        # Uploads
+                        safe_name = f"{new.get('Player', 'Unknown')}_{new.get('Year', '')}_{new.get('Set', '')}".replace(" ", "_")
+                        new['Front_Image'] = upload_image_to_drive(img_f, f"{safe_name}_FRONT.jpg")
+                        if img_b:
                             new['Back_Image'] = upload_image_to_drive(img_b, f"{safe_name}_BACK.jpg")
-                            
-                            save_to_google_sheets(new)
-                            st.session_state.inventory.append(new)
-                            
-                        except Exception as e: st.error(f"Error: {e}")
-                        prog.progress(((i//2)+1)/total)
-                    
-                    st.success("Batch Done!")
-                    time.sleep(1)
-                    st.rerun()
+                        
+                        save_to_google_sheets(new)
+                        st.session_state.inventory.append(new)
+                        
+                    except Exception as e: st.error(f"Error on card {current_card}: {e}")
+                    prog.progress(current_card / total_cards)
+                
+                st.success("Batch Complete!")
+                time.sleep(1)
+                st.rerun()
 
 with col_data:
     st.markdown("### 📋 Live Inventory")
+    search_term = st.text_input("🔍 Search Session", placeholder="Type player name...", label_visibility="collapsed")
     if len(st.session_state.inventory) > 0:
         df = pd.DataFrame(st.session_state.inventory)
+        if search_term: df = df[df.astype(str).apply(lambda x: x.str.contains(search_term, case=False)).any(axis=1)]
         cols = ['Player', 'Year', 'Set', 'Card_Number', 'Estimated_Raw_Value', 'Front_Image']
         visible_cols = [c for c in cols if c in df.columns]
         st.dataframe(df[visible_cols], use_container_width=True, height=600, hide_index=True)
