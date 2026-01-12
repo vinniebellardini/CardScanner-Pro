@@ -73,10 +73,10 @@ def save_to_google_sheets(data_dict):
         try:
             # Check if headers exist, if not add them
             if not sheet.row_values(1):
-                headers = ['Player', 'Year', 'Set', 'Team', 'Card_Number', 'Variation', 'Condition_Notes', 'Estimated_Raw_Value', 'Archive_Location']
+                headers = ['Player', 'Year', 'Set', 'Team', 'Card_Number', 'Variation', 'Condition_Notes', 'Estimated_Raw_Value', 'Archive_Location', 'Search_Source']
                 sheet.append_row(headers)
             
-            # Create row data in correct order
+            # Create row data
             row = [
                 data_dict.get('Player', ''),
                 data_dict.get('Year', ''),
@@ -86,7 +86,8 @@ def save_to_google_sheets(data_dict):
                 data_dict.get('Variation', ''),
                 data_dict.get('Condition_Notes', ''),
                 data_dict.get('Estimated_Raw_Value', ''),
-                data_dict.get('Archive_Location', '')
+                data_dict.get('Archive_Location', ''),
+                "Google Grounding" # Mark that we used live search
             ]
             sheet.append_row(row)
             return True
@@ -159,23 +160,26 @@ with col_action:
             if not s_front: st.warning("Need Front Image")
             else:
                 status = st.empty()
-                status.write("Analyzing...")
+                status.write("Analyzing & Searching Market...")
                 try:
                     # NEW GEMINI API CLIENT SETUP
                     client = genai.Client(api_key=st.secrets["GOOGLE_API_KEY"])
                     
                     ctx = f"HINT: {series_hint}" if series_hint else ""
-                    prompt_text = f"""Identify item. JSON: 'Player','Team','Year','Set','Card_Number','Variation','Condition_Notes','Estimated_Raw_Value' ($ Range). {ctx}"""
+                    prompt_text = f"""Identify item. Search the web for current market sales/sold listings to determine value. 
+                    JSON: 'Player','Team','Year','Set','Card_Number','Variation','Condition_Notes','Estimated_Raw_Value' ($ Range). {ctx}"""
                     
-                    # Prepare images for new API
                     inputs = [prompt_text, Image.open(s_front)]
                     if s_back: inputs.append(Image.open(s_back))
                     
-                    # Call new API
+                    # Call new API WITH SEARCH GROUNDING
                     response = client.models.generate_content(
                         model="gemini-1.5-flash",
                         contents=inputs,
-                        config=types.GenerateContentConfig(response_mime_type="application/json")
+                        config=types.GenerateContentConfig(
+                            response_mime_type="application/json",
+                            tools=[types.Tool(google_search=types.GoogleSearch())] # <--- THE MAGIC SEARCH TOOL
+                        )
                     )
                     
                     new = json.loads(response.text)
@@ -220,14 +224,19 @@ with col_action:
                         stat.markdown(f"**Card {(i//2)+1}/{total}**")
                         try:
                             ctx = f"HINT: {series_hint}" if series_hint else ""
-                            prompt_text = f"""Identify item using Front (Img1) & Back (Img2). JSON keys: 'Player','Team','Year','Set','Card_Number','Variation','Condition_Notes','Estimated_Raw_Value'. {ctx}"""
+                            prompt_text = f"""Identify item using Front (Img1) & Back (Img2). Search the web for current market sales to determine value.
+                            JSON keys: 'Player','Team','Year','Set','Card_Number','Variation','Condition_Notes','Estimated_Raw_Value'. {ctx}"""
                             
                             inputs = [prompt_text, Image.open(sorted_files[i]), Image.open(sorted_files[i+1])]
                             
+                            # BATCH CALL WITH SEARCH GROUNDING
                             response = client.models.generate_content(
                                 model="gemini-1.5-flash",
                                 contents=inputs,
-                                config=types.GenerateContentConfig(response_mime_type="application/json")
+                                config=types.GenerateContentConfig(
+                                    response_mime_type="application/json",
+                                    tools=[types.Tool(google_search=types.GoogleSearch())] # <--- THE MAGIC SEARCH TOOL
+                                )
                             )
                             
                             new = json.loads(response.text)
